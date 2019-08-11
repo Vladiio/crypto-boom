@@ -1,28 +1,105 @@
 import os
+import time
+import collections
+import uuid
 
 from binance.client import Client
+from binance.websockets import BinanceSocketManager
+
+from utils import setup_logger
 
 
 API_KEY = os.environ.get('BINANCE_API_KEY')
 API_SECRET = os.environ.get('BINANCE_API_SECRET')
 
+UP_DIRECTION = 'UP'
+DOWN_DIRECTION = 'DOWN'
+PLATEAU_DIRECTION = 'PLATEUA'
+
+
+db = {'states': [], 'sleep_sec': 30}
+logger = setup_logger()
+
+CurrencyState = collections.namedtuple(
+    'CurrencyState', 'id price direction timestamp')
+
 
 def main():
     client = Client(API_KEY, API_SECRET)
 
-    depth = client.get_order_book(symbol='BNBBTC')
+    bn = BinanceSocketManager(client)
+    bn.start_symbol_ticker_socket('BTCUSDS', process_message)
+    bn.start()
 
-    prices = client.get_all_tickers()
 
-    # print('BINANCE_API_KEY' in os.environ)
-    order = client.create_test_order(
-        side=Client.SIDE_BUY,
-        symbol='BNBBTC',
-        type=Client.ORDER_TYPE_MARKET,
-        quantity=1
-    )
-    import ipdb
-    ipdb.set_trace()
+def process_message(msg):
+    current_price = float(msg['c'])
+    last_state = None
+    try:
+        last_state = db['states'][-1]
+    except IndexError:
+        direction = None
+        return
+    else:
+        direction = get_direction(
+            last_state.price, current_price)
+    finally:
+        if last_state is not None and time.time() - last_state.timestamp < db['sleep_sec']:
+            return
+        current_state = CurrencyState(
+            uuid.uuid4(), current_price, direction, time.time())
+        db['states'].append(current_state)
+
+    logger.info(dict(last_price=last_state.price,
+                     current_price=current_state.price, direction=current_state.direction))
+
+    if direction == PLATEAU_DIRECTION:
+        return
+
+    if should_buy(db['states']):
+        logger.info('buying BTC....')
+
+    if should_sell(db['states']):
+        logger.info('selling BTC...')
+
+    db['states'] = remove_obsolete_if_needed(db['states'])
+
+
+def get_direction(last_price, current_price):
+    if last_price > current_price:
+        return DOWN_DIRECTION
+    elif last_price < current_price:
+        return UP_DIRECTION
+    else:
+        return PLATEAU_DIRECTION
+
+
+def get_last_active_states(states, count):
+    return [state for state in states if state.direction != PLATEAU_DIRECTION][-count:]
+
+
+def should_buy(states):
+    last_state = states[-1]
+    last_active_states = get_last_active_states(states[:-1], 2) + last_state
+    if len(last_active_states) < 3:
+        return False
+    return all(state.direction == UP_DIRECTION for state in last_active_states)
+
+
+def should_sell(states):
+    last_state = states[-1]
+    last_active_states = get_last_active_states(
+        states[:-1], count=1) + last_state,
+    if len(last_active_states) < 2:
+        return False
+    return all(state.direction == DOWN_DIRECTION for state in last_active_states)
+
+
+def remove_obsolete_if_needed(states):
+    if len(states) < 50:
+        return states
+    states_copy = states[10:]
+    return states_copy
 
 
 if __name__ == '__main__':
