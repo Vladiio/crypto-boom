@@ -17,11 +17,17 @@ DOWN_DIRECTION = 'DOWN'
 PLATEAU_DIRECTION = 'PLATEUA'
 
 
-db = {'states': [], 'sleep_sec': 30}
 logger = setup_logger()
 
 CurrencyState = collections.namedtuple(
     'CurrencyState', 'id price direction timestamp')
+
+Coin = collections = collections.namedtuple(
+    'Coin', 'id purchase_price timestamp'
+)
+
+db = {'states': [], 'sleep_sec': 30, 'coin': Coin(
+    uuid.uuid4(), None, None), 'profit': 11000}
 
 
 def main():
@@ -50,17 +56,24 @@ def process_message(msg):
             uuid.uuid4(), current_price, direction, time.time())
         db['states'].append(current_state)
 
-    logger.info(dict(last_price=last_state.price,
-                     current_price=current_state.price, direction=current_state.direction))
+        logger.info(dict(last_price=last_state and last_state.price,
+                         current_price=current_state.price, direction=current_state.direction))
 
     if direction == PLATEAU_DIRECTION:
         return
 
-    if should_buy(db['states']):
-        logger.info('buying BTC....')
+    if should_buy(db):
+        logger.info('buying BTC...')
+        db['coin'] = Coin(uuid.uuid4(), current_price, time.time())
+        db['profit'] -= current_price
+        return
 
-    if should_sell(db['states']):
-        logger.info('selling BTC...')
+    if should_sell(db):
+        profit = db['coin'].purchase_price - current_price
+        db['profit'] += profit
+        db['coin'] = Coin(uuid.uuid4(), None, None)
+        logger.info(
+            f'selling BTC for {current_price}, profit - {profit}, total profit - {db["profit"]}')
 
     db['states'] = remove_obsolete_if_needed(db['states'])
 
@@ -74,25 +87,28 @@ def get_direction(last_price, current_price):
         return PLATEAU_DIRECTION
 
 
-def get_last_active_states(states, count):
-    return [state for state in states if state.direction != PLATEAU_DIRECTION][-count:]
-
-
-def should_buy(states):
-    last_state = states[-1]
-    last_active_states = get_last_active_states(states[:-1], 2) + last_state
-    if len(last_active_states) < 3:
+def should_buy(db):
+    states = db['states']
+    coin = db['coin']
+    if coin.purchase_price is not None:
         return False
-    return all(state.direction == UP_DIRECTION for state in last_active_states)
+    last_active_states = get_last_active_states(states)[-3:]
+    return (len(last_active_states) > 2 and
+            all(state.direction == UP_DIRECTION for state in last_active_states))
 
 
-def should_sell(states):
-    last_state = states[-1]
-    last_active_states = get_last_active_states(
-        states[:-1], count=1) + last_state,
-    if len(last_active_states) < 2:
+def should_sell(db):
+    states = db['states']
+    coin = db['coin']
+    if coin.purchase_price is None:
         return False
-    return all(state.direction == DOWN_DIRECTION for state in last_active_states)
+    last_active_states = get_last_active_states(states)[-2:]
+    return (len(last_active_states) > 1 and
+            all(state.direction == DOWN_DIRECTION for state in last_active_states))
+
+
+def get_last_active_states(states):
+    return [state for state in states if state.direction != PLATEAU_DIRECTION]
 
 
 def remove_obsolete_if_needed(states):
